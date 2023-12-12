@@ -23,7 +23,8 @@ class Job(db.Model):
     requestedTime = db.Column(db.Integer)
     completedTime = db.Column(db.Integer)
 
-db.create_all()
+with app.app_context():
+    db.create_all()
 
 @app.route('/requestTranscription', methods=['POST'])
 def request_transcription():
