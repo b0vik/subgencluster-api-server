@@ -102,7 +102,12 @@ def request_file_transcription():
     file.seek(0)  # reset file pointer to beginning
 
     filename = secure_filename(f"{sha512}.{file.filename.rsplit('.', 1)[1]}")
-    file.save(os.path.join('video-request-dir', filename))
+    
+    directory = 'video-request-dir'
+    if not os.path.exists(directory):
+        os.makedirs(directory)
+
+    file.save(os.path.join(directory, filename))
 
     audio_url = f"{hostname}/getTemporaryFile/{filename}"
 
