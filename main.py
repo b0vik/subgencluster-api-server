@@ -202,7 +202,7 @@ def retrieve_transcripts():
     else:
         return jsonify({'status': 'error', 'message': 'Invalid transcript type'})
 
-    transcripts = [{'id': job.id, 'transcript': job.transcript} for job in jobs]
+    transcripts = [{'id': job.id, 'transcript': job.transcript, 'requestedTime': job.requestedTime, 'completedTime': job.completedTime, 'requestedModel': job.requestedModel, 'workerName': job.workerName, 'assignedWorker': job.assignedWorker} for job in jobs]
 
     return jsonify(transcripts)
 
