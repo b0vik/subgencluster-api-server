@@ -73,11 +73,9 @@ def request_youtube_transcription():
 
     return jsonify({'status': 'success'})
 
-import hashlib
-import os
-from werkzeug.utils import secure_filename
 
-@app.route('/requestFileTranscription', methods=['POST'])
+
+@app.route('/requestFileTranscription', methods=['POST']) # TODO: transcode to WAV first?
 def request_file_transcription():
     if 'file' not in request.files:
         return jsonify({'status': 'error', 'message': 'No file part in the request.'}), 400
@@ -111,7 +109,7 @@ def request_file_transcription():
 
     audio_url = f"{hostname}/getTemporaryFile/{filename}"
 
-    job = Job(id=str(uuid.uuid4()), username=username, apiKey=api_key, requestedModel=requested_model, jobType=job_type, audioUrl=audio_url, jobStatus='requested', requestedTime=int(time.time()), sha512=sha512)
+    job = Job(id=str(uuid.uuid4()), username=username, requestedModel=requested_model, jobType=job_type, audioUrl=audio_url, jobStatus='requested', requestedTime=int(time.time()), sha512=sha512)
     db.session.add(job)
     db.session.commit()
 
