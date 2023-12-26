@@ -15,7 +15,7 @@ author = 'b0vik'
 # https://www.sphinx-doc.org/en/master/usage/configuration.html#general-configuration
 
 extensions = [
-    'sphinx-rtd-theme'
+    'sphinx_rtd_theme'
 ]
 
 templates_path = ['_templates']
