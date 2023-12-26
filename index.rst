@@ -10,9 +10,10 @@ Welcome to subgencluster-api-server's documentation!
    :maxdepth: 2
    :caption: Contents:
 
+   docs/accounts
    docs/clients
    docs/workers
-   docs/accounts
+
 
 
 Indices and tables

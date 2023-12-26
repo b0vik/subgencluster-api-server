@@ -1,8 +1,10 @@
-Account API Endpoints
+Accounts
 =====================
 
 Create Account
 --------------
+
+This endpoint allows an account to be created.
 
 **Endpoint**: ``/createAccount``
 
@@ -13,7 +15,7 @@ Create Account
 .. code-block:: json
 
    {
-       "username": "string"
+       "username": "example_username"
    }
 
 **Response**:
@@ -21,6 +23,6 @@ Create Account
 .. code-block:: json
 
    {
-       "username": "string",
-       "api_key": "string"
+       "username": "example_username",
+       "api_key": "example_api_key"
    }
