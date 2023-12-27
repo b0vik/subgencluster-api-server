@@ -32,11 +32,13 @@ class Job(db.Model):
     assignedWorker = db.Column(db.Integer)
     requestedTime = db.Column(db.Integer)
     completedTime = db.Column(db.Integer)
-
+    progress = db.Column(db.Float)
+    video_length = db.Column(db.Float)
+    
 with app.app_context():
     db.create_all()
     
-@app.route('/createAccount', methods=['POST'])
+@app.route('/createAccount', methods=['POST']) # TODO: this should be heavily restricted and rate limited. maybe require oauth login with another platform a la duckdns?
 def create_account():
     data = request.get_json()
     username = data.get('username')
@@ -71,7 +73,7 @@ def request_youtube_transcription():
     db.session.add(job)
     db.session.commit()
 
-    return jsonify({'status': 'success'})
+    return jsonify({'status': 'success', 'job_id': job.id})
 
 
 
@@ -90,7 +92,7 @@ def request_file_transcription():
     requested_model = data.get('requestedModel')
     job_type = data.get('jobType')
 
-    valid_job_types = ['public-youtube-video']
+    valid_job_types = ['public-youtube-video', 'file']
     valid_models = ['small', 'small.en', 'base', 'base.en', 'tiny', 'tiny.en', 'medium', 'medium.en', 'large-v2', 'large-v3']
 
     if job_type not in valid_job_types or requested_model not in valid_models:
@@ -113,7 +115,8 @@ def request_file_transcription():
     db.session.add(job)
     db.session.commit()
 
-    return jsonify({'status': 'success'})
+    return jsonify({'status': 'success', 'job_id': job.id, 'sha512': sha512})
+
 
 @app.route('/getTemporaryFile/<filename>', methods=['GET'])
 def get_temporary_file(filename):
@@ -155,12 +158,16 @@ def update_job_progress():
     worker_type = data.get('workerType')
     transcript = data.get('transcript')
     job_id = data.get('jobIdentifier')
+    progress = data.get('progress')
+    video_length = data.get('video_length')
 
     ic(worker_name, api_key, progress, cpu_load, worker_type, transcript, datetime.now())
 
     job = Job.query.get(job_id)
     if job is not None:
         job.transcript = transcript
+        job.progress = progress
+        job.video_length = video_length
         job.jobStatus = 'transcribing'
         db.session.commit()
 
@@ -197,7 +204,7 @@ def retrieve_transcripts():
 
     if transcript_type == 'public-youtube-video':
         jobs = Job.query.filter_by(audioUrl=youtube_url, jobStatus='completed').all()
-    elif transcript_type == 'other-stub':
+    elif transcript_type == 'file':
         jobs = Job.query.filter_by(sha512=sha512, jobStatus='completed').all()
     else:
         return jsonify({'status': 'error', 'message': 'Invalid transcript type'})
@@ -205,6 +212,44 @@ def retrieve_transcripts():
     transcripts = [{'id': job.id, 'transcript': job.transcript, 'requestedTime': job.requestedTime, 'completedTime': job.completedTime, 'requestedModel': job.requestedModel, 'workerName': job.workerName, 'assignedWorker': job.assignedWorker} for job in jobs]
 
     return jsonify(transcripts)
+
+@app.route('/retrieveTranscriptByJobId', methods=['POST'])
+def retrieve_transcript_by_job_id():
+    data = request.get_json()
+    job_id = data.get('jobId')
+
+    jobs = Job.query.filter_by(id=job_id, jobStatus='completed').all()
+
+    if len(jobs) > 1:
+        return jsonify({'status': 'error', 'message': 'More than one transcript found for this job id'}), 400
+    elif len(jobs) == 0:
+        return jsonify({'status': 'error', 'message': 'No transcript found for this job id'}), 404
+
+    job = jobs[0]
+    transcript = {'id': job.id, 'transcript': job.transcript, 'requestedTime': job.requestedTime, 'completedTime': job.completedTime, 'requestedModel': job.requestedModel, 'workerName': job.workerName, 'assignedWorker': job.assignedWorker}
+
+    return jsonify(transcript)
+
+@app.route('/getJobStatus', methods=['POST'])
+def get_job_status():
+    data = request.get_json()
+    job_id = data.get('jobIdentifier')
+
+    job = Job.query.get(job_id)
+    if job is None:
+        return jsonify({'status': 'error', 'message': 'Job not found'}), 404
+
+    response = {
+        'jobStatus': job.jobStatus,
+        'requestedModel': job.requestedModel,
+        'requestedTime': job.requestedTime,
+        'jobType': job.jobType,
+        'transcript': job.transcript if job.transcript else "",
+        'progress': job.progress,
+        'video_length': job.video_length
+    }
+
+    return jsonify(response)
 
 if __name__ == '__main__':
     app.run(port=8080)
