@@ -1,0 +1,14 @@
+{
+	"folders": [
+		{
+			"path": "../subgencluster-worker"
+		},
+		{
+			"path": "."
+		},
+		{
+			"path": "../sgc-cli"
+		}
+	],
+	"settings": {}
+}

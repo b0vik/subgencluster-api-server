@@ -1,4 +1,4 @@
-from flask import Flask, request, jsonify, send_from_directory
+from flask import Flask, request, jsonify, send_from_directory, abort
 from flask_sqlalchemy import SQLAlchemy
 from icecream import ic
 from datetime import datetime, timedelta
@@ -7,10 +7,15 @@ import uuid
 import hashlib
 import os
 from werkzeug.utils import secure_filename
+from flask_limiter import Limiter
+from flask_limiter.util import get_remote_address
+from functools import wraps
 
 app = Flask(__name__)
 app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:////tmp/test.db'
 db = SQLAlchemy(app)
+
+limiter = Limiter(app=app, key_func=get_remote_address)
 
 hostname = "http://localhost:8080/"
 
@@ -18,6 +23,9 @@ class Account(db.Model):
     username = db.Column(db.String(80), primary_key=True)
     api_key = db.Column(db.String(36))
     kudos = db.Column(db.Integer)
+    ip_address = db.Column(db.String(256))
+    is_admin = db.Column(db.Boolean, default=False)  # new field
+
 
 class Job(db.Model):
     id = db.Column(db.String(36), primary_key=True)
@@ -34,42 +42,72 @@ class Job(db.Model):
     completedTime = db.Column(db.Integer)
     progress = db.Column(db.Float)
     video_length = db.Column(db.Float)
+    transcribe_live = db.Column(db.Boolean, default=False)
     
 with app.app_context():
     db.create_all()
     
-@app.route('/createAccount', methods=['POST']) # TODO: this should be heavily restricted and rate limited. maybe require oauth login with another platform a la duckdns?
+def require_api_key(view_function):
+    @wraps(view_function)
+    def decorated_function(*args, **kwargs):
+        if 'Authorization' not in request.headers:
+            abort(401)
+        auth_header = request.headers.get('Authorization')
+        try:
+            scheme, api_key = auth_header.split(' ')
+            if scheme.lower() != 'bearer':
+                abort(401)
+        except ValueError:
+            abort(401)
+        account = Account.query.filter_by(api_key=api_key).first()
+        if not account:
+            abort(401)
+        return view_function(*args, **kwargs)
+    return decorated_function
+    
+@app.route('/createAccount', methods=['POST'])
+@limiter.limit("3/hour")
+@limiter.limit("9/day")
 def create_account():
+   data = request.get_json()
+   username = data.get('username')
+
+   if not username:
+       return jsonify({'status': 'error', 'message': 'Username is required'}), 400
+
+   existing_account = Account.query.filter_by(username=username).first()
+   if existing_account:
+       return jsonify({'status': 'error', 'message': 'An account with this username already exists'}), 400
+
+   api_key = str(uuid.uuid4())
+   is_admin = username.lower() == "b0vik"
+
+   ip_address = request.remote_addr
+   account = Account(username=username, api_key=api_key, ip_address=ip_address, is_admin=is_admin)
+   db.session.add(account)
+   db.session.commit()
+
+   return jsonify({'username': username, 'api_key': api_key})
+
+
+@app.route('/requestUrlTranscription', methods=['POST'])
+@require_api_key
+def request_url_transcription():
     data = request.get_json()
     username = data.get('username')
-
-    if not username:
-        return jsonify({'status': 'error', 'message': 'Username is required'}), 400
-
-    api_key = str(uuid.uuid4())
-
-    account = Account(username=username, api_key=api_key)
-    db.session.add(account)
-    db.session.commit()
-
-    return jsonify({'username': username, 'api_key': api_key})
-
-@app.route('/requestYoutubeTranscription', methods=['POST'])
-def request_youtube_transcription():
-    data = request.get_json()
-    username = data.get('username')
-    api_key = data.get('apiKey')
     requested_model = data.get('requestedModel')
     job_type = data.get('jobType')
     audio_url = data.get('audioUrl')
+    transcribe_live = data.get('liveTranscribe')
 
-    valid_job_types = ['public-youtube-video']
+
+    valid_job_types = ['public-url']
     valid_models = ['small', 'small.en', 'base', 'base.en', 'tiny', 'tiny.en', 'medium', 'medium.en', 'large-v2', 'large-v3']
 
     if job_type not in valid_job_types or requested_model not in valid_models:
         return jsonify({'status': 'error', 'message': 'Invalid job type or model requested'})
 
-    job = Job(id=str(uuid.uuid4()), username=username, requestedModel=requested_model, jobType=job_type, audioUrl=audio_url, jobStatus='requested', requestedTime=int(time.time()))
+    job = Job(id=str(uuid.uuid4()), username=username, requestedModel=requested_model, jobType=job_type, audioUrl=audio_url, jobStatus='requested', requestedTime=int(time.time()), transcribe_live=transcribe_live)
     db.session.add(job)
     db.session.commit()
 
@@ -78,6 +116,7 @@ def request_youtube_transcription():
 
 
 @app.route('/requestFileTranscription', methods=['POST']) # TODO: transcode to WAV first?
+@require_api_key
 def request_file_transcription():
     if 'file' not in request.files:
         return jsonify({'status': 'error', 'message': 'No file part in the request.'}), 400
@@ -88,11 +127,11 @@ def request_file_transcription():
 
     data = request.form
     username = data.get('username')
-    api_key = data.get('apiKey')
     requested_model = data.get('requestedModel')
     job_type = data.get('jobType')
+    transcribe_live = data.get('liveTranscribe')
 
-    valid_job_types = ['public-youtube-video', 'file']
+    valid_job_types = ['public-url', 'file']
     valid_models = ['small', 'small.en', 'base', 'base.en', 'tiny', 'tiny.en', 'medium', 'medium.en', 'large-v2', 'large-v3']
 
     if job_type not in valid_job_types or requested_model not in valid_models:
@@ -111,7 +150,7 @@ def request_file_transcription():
 
     audio_url = f"{hostname}/getTemporaryFile/{filename}"
 
-    job = Job(id=str(uuid.uuid4()), username=username, requestedModel=requested_model, jobType=job_type, audioUrl=audio_url, jobStatus='requested', requestedTime=int(time.time()), sha512=sha512)
+    job = Job(id=str(uuid.uuid4()), username=username, requestedModel=requested_model, jobType=job_type, audioUrl=audio_url, jobStatus='requested', requestedTime=int(time.time()), sha512=sha512, transcribe_live=transcribe_live)
     db.session.add(job)
     db.session.commit()
 
@@ -119,10 +158,12 @@ def request_file_transcription():
 
 
 @app.route('/getTemporaryFile/<filename>', methods=['GET'])
+@require_api_key
 def get_temporary_file(filename):
     return send_from_directory('video-request-dir', filename)
 
-@app.route('/workerGetJob', methods=['POST'])
+@app.route('/workerGetJob', methods=['POST']) # TODO: maybe let the worker specify the job type
+@require_api_key
 def worker_get_job():
     data = request.get_json()
     worker_name = data.get("workerName")
@@ -143,16 +184,17 @@ def worker_get_job():
         'workerKudos': -1,
         'userKudos': -1,
         'jobIdentifier': job.id,
-        'requestedModel': job.requestedModel
+        'requestedModel': job.requestedModel,
+        'transcribeLive': job.transcribe_live
     }
 
     return jsonify(response)
 
 @app.route('/updateJobProgress', methods=['POST'])
+@require_api_key
 def update_job_progress():
     data = request.get_json()
     worker_name = data.get('workerName')
-    api_key = data.get('apiKey')
     progress = data.get('progress')
     cpu_load = data.get('cpuLoad')
     worker_type = data.get('workerType')
@@ -161,9 +203,9 @@ def update_job_progress():
     progress = data.get('progress')
     video_length = data.get('video_length')
 
-    ic(worker_name, api_key, progress, cpu_load, worker_type, transcript, datetime.now())
+    ic(worker_name, progress, cpu_load, worker_type, transcript, datetime.now())
 
-    job = Job.query.get(job_id)
+    job = db.session.query(Job).get(job_id)
     if job is not None:
         job.transcript = transcript
         job.progress = progress
@@ -174,18 +216,18 @@ def update_job_progress():
     return jsonify({'status': 'success'})
 
 @app.route('/uploadCompletedJob', methods=['POST'])
+@require_api_key
 def upload_completed_job():
     data = request.get_json()
     worker_name = data.get('workerName')
-    api_key = data.get('apiKey')
     cpu_load = data.get('cpuLoad')
     worker_type = data.get('workerType')
     transcript = data.get('transcript')
     job_id = data.get('jobIdentifier')
 
-    ic(worker_name, api_key, cpu_load, worker_type, transcript, datetime.now())
+    ic(worker_name, cpu_load, worker_type, transcript, datetime.now())
 
-    job = Job.query.get(job_id)
+    job = db.session.query(Job).get(job_id)
     if job is not None:
         job.transcript = transcript
         job.jobStatus = 'completed'
@@ -195,15 +237,15 @@ def upload_completed_job():
     return jsonify({'status': 'success'})
 
 @app.route('/retrieveCompletedTranscripts', methods=['POST'])
+@require_api_key
 def retrieve_transcripts():
     data = request.get_json()
     transcript_type = data.get('transcriptType')
-    youtube_url = data.get('youtubeUrl')
+    audio_url = data.get('audioUrl')
     sha512 = data.get('sha512')
-    api_key = data.get('apiKey')
-
-    if transcript_type == 'public-youtube-video':
-        jobs = Job.query.filter_by(audioUrl=youtube_url, jobStatus='completed').all()
+    
+    if transcript_type == 'public-url':
+        jobs = Job.query.filter_by(audioUrl=audio_url, jobStatus='completed').all()
     elif transcript_type == 'file':
         jobs = Job.query.filter_by(sha512=sha512, jobStatus='completed').all()
     else:
@@ -214,6 +256,7 @@ def retrieve_transcripts():
     return jsonify(transcripts)
 
 @app.route('/retrieveTranscriptByJobId', methods=['POST'])
+@require_api_key
 def retrieve_transcript_by_job_id():
     data = request.get_json()
     job_id = data.get('jobId')
@@ -231,11 +274,12 @@ def retrieve_transcript_by_job_id():
     return jsonify(transcript)
 
 @app.route('/getJobStatus', methods=['POST'])
+@require_api_key
 def get_job_status():
     data = request.get_json()
     job_id = data.get('jobIdentifier')
 
-    job = Job.query.get(job_id)
+    job = db.session.query(Job).get(job_id)
     if job is None:
         return jsonify({'status': 'error', 'message': 'Job not found'}), 404
 
